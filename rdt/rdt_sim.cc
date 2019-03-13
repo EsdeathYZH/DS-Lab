@@ -212,7 +212,7 @@ static struct message *generate_msg()
     }
 
     tot_chars_sent += msg->size;
-
+    //tot_chars_sent ++;
     return msg;
 }
 
@@ -345,6 +345,7 @@ void Receiver_ToUpperLayer(struct message *msg)
     }
 
     tot_chars_delivered += msg->size;
+    //tot_chars_delivered++;
 }
 
 

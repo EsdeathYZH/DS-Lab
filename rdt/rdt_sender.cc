@@ -37,8 +37,10 @@ seq_nr_t next_ack_expected = 0;
 seq_nr_t next_seq_num = 0;
 seq_nr_t nbuffered = 0;
 
+static seq_nr_t GetSeqNum(packet* pkt){ ASSERT(pkt); return (seq_nr_t)(pkt->data[3] & 127); }
+
 static void Sender_AddTimer(packet* pkt, double expire_time){
-    printf("At %.2fs: Add timer(%d)\n", GetSimulationTime(), (seq_nr_t)(pkt->data[3]));
+    printf("At %.2fs: Add timer(%d)\n", GetSimulationTime(), GetSeqNum(pkt));
     SenderTimer timer;
     timer.acked = false;
     timer.expire_time = expire_time;
@@ -53,7 +55,7 @@ static void Sender_RemoveTimer(seq_nr_t seq_num){
     printf("At %.2fs: Remove timer(%d)\n", GetSimulationTime(), seq_num);
     ASSERT(timer_chain.size()!=0);
     ASSERT(Sender_isTimerSet());
-    if((seq_nr_t)(timer_chain.front().pkt->data[3]) == seq_num){
+    if(GetSeqNum(timer_chain.front().pkt) == seq_num){
         Sender_StopTimer();
         timer_chain.pop_front();
         while(timer_chain.size()!=0){
@@ -61,14 +63,14 @@ static void Sender_RemoveTimer(seq_nr_t seq_num){
                 timer_chain.pop_front();
             }else{
                 printf("At %.2fs: Start timer(%d),rest time(%.2fs)\n", GetSimulationTime(),
-                 (seq_nr_t)(timer_chain.front().pkt->data[3]), timer_chain.front().expire_time - GetSimulationTime());
+                 GetSeqNum(timer_chain.front().pkt), timer_chain.front().expire_time - GetSimulationTime());
                 Sender_StartTimer(timer_chain.front().expire_time - GetSimulationTime());
                 break;
             }
         }
     }else{
         for(auto& iter:timer_chain){
-            if((seq_nr_t)(iter.pkt->data[3]) == seq_num) iter.acked = true;
+            if(GetSeqNum(iter.pkt) == seq_num) iter.acked = true;
         }
     }
 }
@@ -107,7 +109,7 @@ void Sender_FromUpperLayer(struct message *msg)
 
     /* the cursor always points to the first unsent byte in the message */
     int cursor = 0;
-
+    ASSERT(msg);
     while (cursor < msg->size) {
         /* fill in the packet */
         int payload_size = (maxpayload_size < (msg->size - cursor)) ? maxpayload_size : (msg->size - cursor);
@@ -131,12 +133,12 @@ void Sender_FromUpperLayer(struct message *msg)
             int next_send = (next_ack_expected + nbuffered) % WINDOW_SIZE;
             sliding_window[next_send] = pkt;
             Sender_ToLowerLayer(&sliding_window[next_send]);
-            fprintf(stdout, "At %.2fs: send packet(%d)!\n", GetSimulationTime(), (seq_nr_t)(pkt.data[3]));
+            fprintf(stdout, "At %.2fs: send packet(%d)!\n", GetSimulationTime(), GetSeqNum(&pkt));
             Sender_AddTimer(&sliding_window[next_send], GetSimulationTime() + TIME_OUT);
             nbuffered++;
         }else{
             /* store the packet in wait buffer */
-            printf("At %.2fs: Enter into wait buffer(%d)\n", GetSimulationTime(), (seq_nr_t)(pkt.data[3]));
+            printf("At %.2fs: Enter into wait buffer(%d)\n", GetSimulationTime(), GetSeqNum(&pkt));
             wait_buffer.emplace_back(pkt);
         }
         /* move the cursor */
@@ -148,21 +150,20 @@ void Sender_FromUpperLayer(struct message *msg)
    sender */
 void Sender_FromLowerLayer(struct packet *pkt)
 {
+    ASSERT(pkt);
     fprintf(stdout, "At %.2fs: a ack(%d) received,expected(%d),nbuffer(%d), waitbuffer(%d)!\n", GetSimulationTime(), 
-            (seq_nr_t)(pkt->data[3]), (seq_nr_t)(sliding_window[next_ack_expected].data[3]), nbuffered, (int)wait_buffer.size());
-
+            GetSeqNum(pkt), GetSeqNum(&sliding_window[next_ack_expected]), nbuffered, (int)wait_buffer.size());
     /* sanity check in case the packet is corrupted */
     if(*((u_int16_t*)pkt->data) != chksum(pkt->data + 2, pkt->data[2] + 2)){
         fprintf(stdout, "At %.2fs: a packet corrupted!\n", GetSimulationTime());
         return;
     }
 
-    seq_nr_t ack = (seq_nr_t)(pkt->data[3]);
-    printf("right-side seq:%d\n", sliding_window[(next_ack_expected+nbuffered+WINDOW_SIZE-1)%WINDOW_SIZE].data[3]);
-    while(nbuffered > 0 && between(sliding_window[next_ack_expected].data[3], ack,
-             (seq_nr_t)(sliding_window[(next_ack_expected+nbuffered+WINDOW_SIZE-1)%WINDOW_SIZE].data[3])+1)){
+    seq_nr_t ack = GetSeqNum(pkt);
+    while(nbuffered > 0 && between(GetSeqNum(&sliding_window[next_ack_expected]), ack,
+             (GetSeqNum(&sliding_window[(next_ack_expected+nbuffered+WINDOW_SIZE-1)%WINDOW_SIZE])+1)%SEQ_SIZE)){
         nbuffered--;
-        Sender_RemoveTimer(sliding_window[next_ack_expected].data[3]);
+        Sender_RemoveTimer(GetSeqNum(&sliding_window[next_ack_expected]));
         incNum(next_ack_expected, WINDOW_SIZE);
     }
     
@@ -170,8 +171,9 @@ void Sender_FromLowerLayer(struct packet *pkt)
         int next_send = (next_ack_expected + nbuffered) % WINDOW_SIZE;
         sliding_window[next_send] = wait_buffer.front();
         wait_buffer.pop_front();
-        printf("Drain a packet from wait buffer(%d)\n", (seq_nr_t)(sliding_window[next_send].data[3]));
+        printf("Drain a packet from wait buffer(%d)\n", GetSeqNum(&sliding_window[next_send]));
         Sender_ToLowerLayer(&sliding_window[next_send]);
+        fprintf(stdout, "At %.2fs: send packet(%d)!\n", GetSimulationTime(), GetSeqNum(&sliding_window[next_send]));
         Sender_AddTimer(&sliding_window[next_send], GetSimulationTime() + TIME_OUT);
         nbuffered++;
     }
@@ -183,7 +185,7 @@ void Sender_Timeout()
     fprintf(stdout, "At %.2fs: a timeout occurs!\n", GetSimulationTime());
     packet* pkt = timer_chain.front().pkt;
     timer_chain.pop_front();
-    fprintf(stdout, "At %.2fs: resend packet(%d)!\n", GetSimulationTime(), (seq_nr_t)(pkt->data[3]));
+    fprintf(stdout, "At %.2fs: resend packet(%d)!\n", GetSimulationTime(), GetSeqNum(pkt));
     Sender_ToLowerLayer(pkt);
     Sender_AddTimer(pkt, GetSimulationTime() + TIME_OUT);
     while(timer_chain.size()!=0){
@@ -191,9 +193,18 @@ void Sender_Timeout()
             timer_chain.pop_front();
         }else{
             printf("At %.2fs: Start timer(%d),rest time(%.2fs)\n", GetSimulationTime(),
-                (seq_nr_t)(timer_chain.front().pkt->data[3]), timer_chain.front().expire_time - GetSimulationTime());
-            Sender_StartTimer(timer_chain.front().expire_time - GetSimulationTime());
-            break;
+                GetSeqNum(timer_chain.front().pkt), timer_chain.front().expire_time - GetSimulationTime());
+            double new_timeout = timer_chain.front().expire_time - GetSimulationTime();
+            if(new_timeout < 0){
+                pkt = timer_chain.front().pkt;
+                timer_chain.pop_front();
+                fprintf(stdout, "At %.2fs: resend packet(%d)!\n", GetSimulationTime(), GetSeqNum(pkt));
+                Sender_ToLowerLayer(pkt);
+                Sender_AddTimer(pkt, GetSimulationTime() + TIME_OUT);
+            }else{
+                Sender_StartTimer(new_timeout);
+                break;
+            }
         }
     }
 }
