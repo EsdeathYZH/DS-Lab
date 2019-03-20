@@ -91,6 +91,12 @@ static void build_udp_packet(struct rte_mbuf *m, const char* data, uint32_t data
 	udp_hdr = rte_pktmbuf_mtod_offset(m, struct udp_hdr *,
                   sizeof(struct ether_hdr)+sizeof(struct ipv4_hdr));
 
+	//Fill UDP header
+	udp_hdr->src_port = 0xff << 8;
+	udp_hdr->dst_port = 0xfe << 8;
+	udp_hdr->dgram_len = (data_len + sizeof(struct udp_hdr))<<8;
+	udp_hdr->dgram_cksum = 0xffff;
+
 	//Fill ethernet header
 	struct ether_addr s_addr, d_addr;
 	rte_eth_macaddr_get(0, &s_addr);
@@ -99,22 +105,19 @@ static void build_udp_packet(struct rte_mbuf *m, const char* data, uint32_t data
 	eth_hdr->d_addr = d_addr;
 	eth_hdr->s_addr = s_addr;
 	eth_hdr->ether_type = rte_be_to_cpu_16(ETHER_TYPE_IPv4);
+
 	//Fill ipv4 header
 	ipv4_hdr->version_ihl = (4 << 4) | 5;
 	ipv4_hdr->type_of_service = 0;
 	ipv4_hdr->src_addr = IPv4(10,80,168,192);
 	ipv4_hdr->dst_addr = IPv4(6,80,168,192);
-	ipv4_hdr->total_length = data_len+sizeof(struct ipv4_hdr)+sizeof(struct udp_hdr) ;
-	ipv4_hdr->packet_id = 15;
-	ipv4_hdr->fragment_offset = (2 << 13) | 0;
+	ipv4_hdr->total_length = 38 << 8 ;
+	ipv4_hdr->packet_id = 15 << 8;
+	ipv4_hdr->fragment_offset = 128;
 	ipv4_hdr->time_to_live = 0xff;
 	ipv4_hdr->next_proto_id = 0x11;
 	ipv4_hdr->hdr_checksum = rte_ipv4_cksum(ipv4_hdr);
-	//Fill UDP header
-	udp_hdr->src_port = 1000;
-	udp_hdr->dst_port = 1001;
-	udp_hdr->dgram_len = data_len + sizeof(struct udp_hdr);
-	udp_hdr->dgram_cksum = 0xffff;
+
 	//Fill udp payload data
 	void *payload = rte_pktmbuf_mtod_offset(m, void *,
             sizeof(struct udp_hdr)+sizeof(struct ether_hdr)+sizeof(struct ipv4_hdr));
